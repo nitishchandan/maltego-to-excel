@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Maltego to Excel</title>
+<style>
+  body {
+    font-family: Arial, sans-serif;
+    font-size: 14px;
+    color: #222;
+    background: #fff;
+    margin: 0;
+    padding: 30px;
+  }
+  h1 { font-size: 18px; margin: 0 0 4px 0; }
+  p.sub { color: #666; margin: 0 0 24px 0; font-size: 13px; }
+  hr { border: none; border-top: 1px solid #ddd; margin: 24px 0; }
+  label { display: block; font-weight: bold; margin-bottom: 6px; }
+  input[type="file"] { font-size: 13px; }
+  #status { margin-top: 12px; font-size: 13px; color: #555; min-height: 18px; }
+  #status.error { color: #c00; }
+  #status.ok    { color: #080; }
+  #results { display: none; margin-top: 24px; }
+  .stats { display: flex; gap: 24px; margin-bottom: 20px; }
+  .stat-box { border: 1px solid #ccc; padding: 10px 18px; text-align: center; min-width: 80px; }
+  .stat-box .num { font-size: 22px; font-weight: bold; display: block; }
+  .stat-box .lbl { font-size: 11px; color: #888; text-transform: uppercase; }
+  table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
+  th { background: #f0f0f0; border: 1px solid #ccc; padding: 7px 10px; text-align: left; font-size: 13px; }
+  td { border: 1px solid #ddd; padding: 6px 10px; font-size: 13px; vertical-align: top; }
+  tr:nth-child(even) td { background: #fafafa; }
+  .platform-list { display: flex; flex-wrap: wrap; gap: 4px; }
+  .tag { background: #e8e8e8; border: 1px solid #ccc; padding: 2px 7px; font-size: 12px; border-radius: 2px; white-space: nowrap; }
+  .children-toggle { background: none; border: none; color: #0066cc; cursor: pointer; font-size: 12px; padding: 0; text-decoration: underline; margin-top: 6px; display: block; }
+  .children-list { display: none; margin-top: 6px; font-size: 12px; color: #555; line-height: 1.8; }
+  button.export-btn { background: #2a6ebb; color: #fff; border: none; padding: 9px 20px; font-size: 14px; cursor: pointer; }
+  button.export-btn:hover { background: #1f5499; }
+  button.export-btn:disabled { background: #999; cursor: default; }
+</style>
+</head>
+<body>
+
+<h1>Maltego to Excel</h1>
+<p class="sub">Upload a Maltego CSV export. Root entities are detected automatically and exported as one row each.</p>
+
+<hr>
+
+<label for="file-input">Select CSV file</label>
+<input type="file" id="file-input" accept=".csv">
+<div id="status">No file selected.</div>
+
+<div id="results">
+  <hr>
+  <div class="stats" id="stat-row"></div>
+  <p><strong>Root entities found:</strong></p>
+  <table id="roots-table">
+    <thead>
+      <tr><th>#</th><th>Root Value</th><th>Type</th><th>Platforms / Links</th></tr>
+    </thead>
+    <tbody id="roots-body"></tbody>
+  </table>
+  <button class="export-btn" id="download-btn" onclick="downloadExcel()">Download Excel</button>
+</div>
+
+<script>
+const fileInput = document.getElementById('file-input');
+const statusEl  = document.getElementById('status');
+const results   = document.getElementById('results');
+const statRow   = document.getElementById('stat-row');
+const rootsBody = document.getElementById('roots-body');
+
+function setStatus(msg, cls) {
+  statusEl.textContent = msg;
+  statusEl.className = cls || '';
+}
+
+fileInput.addEventListener('change', () => {
+  const file = fileInput.files[0];
+  if (!file) return;
+  if (!file.name.endsWith('.csv')) { setStatus('Error: please select a .csv file.', 'error'); return; }
+  setStatus('Processing...');
+  results.style.display = 'none';
+  const fd = new FormData();
+  fd.append('file', file);
+  fetch('/preview', { method: 'POST', body: fd })
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) { setStatus('Error: ' + data.error, 'error'); return; }
+      renderResults(data.roots);
+      setStatus(`Done. ${data.roots.length} root ${data.roots.length === 1 ? 'entity' : 'entities'} found.`, 'ok');
+    })
+    .catch(err => setStatus('Network error: ' + err.message, 'error'));
+});
+
+function renderResults(roots) {
+  const totalPlatforms = roots.reduce((s, r) => s + r.platforms.length, 0);
+  const totalNodes     = roots.reduce((s, r) => s + r.platforms.reduce((ps, p) => ps + p.children.length, 0), 0);
+  statRow.innerHTML = `
+    <div class="stat-box"><span class="num">${roots.length}</span><span class="lbl">Roots</span></div>
+    <div class="stat-box"><span class="num">${totalPlatforms}</span><span class="lbl">Platforms</span></div>
+    <div class="stat-box"><span class="num">${totalNodes}</span><span class="lbl">Leaf nodes</span></div>`;
+  rootsBody.innerHTML = '';
+  roots.forEach((root, i) => {
+    const tags = root.platforms.map(p => `<span class="tag">${p.type} (${p.children.length})</span>`).join('');
+    const childLines = root.platforms.flatMap(p => p.children.map(c => `${p.type} › ${c.type}: ${c.label}`)).join('<br>');
+    const total = root.platforms.reduce((s, p) => s + p.children.length, 0);
+    const toggleId = `cl-${i}`;
+    rootsBody.innerHTML += `<tr>
+      <td>${i + 1}</td>
+      <td><strong>${root.label}</strong></td>
+      <td>${root.type}</td>
+      <td>
+        <div class="platform-list">${tags}</div>
+        ${total > 0 ? `<button class="children-toggle" onclick="toggleChildren('${toggleId}', this)">show ${total} leaf nodes</button><div class="children-list" id="${toggleId}">${childLines}</div>` : ''}
+      </td></tr>`;
+  });
+  results.style.display = 'block';
+}
+
+function toggleChildren(id, btn) {
+  const el = document.getElementById(id);
+  const open = el.style.display === 'block';
+  el.style.display = open ? 'none' : 'block';
+  btn.textContent = open ? btn.textContent.replace('hide', 'show') : 'hide leaf nodes';
+}
+
+function downloadExcel() {
+  const btn = document.getElementById('download-btn');
+  btn.disabled = true; btn.textContent = 'Generating...';
+  setStatus('Building Excel file...', '');
+  fetch('/download', { method: 'POST' })
+    .then(r => { if (!r.ok) return r.json().then(d => Promise.reject(d.error)); return r.blob(); })
+    .then(blob => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'maltego_export.xlsx'; a.click();
+      URL.revokeObjectURL(url);
+      setStatus('Downloaded.', 'ok');
+      btn.disabled = false; btn.textContent = 'Download Excel';
+    })
+    .catch(err => {
+      setStatus('Error: ' + (err || 'download failed'), 'error');
+      btn.disabled = false; btn.textContent = 'Download Excel';
+    });
+}
+</script>
+</body>
+</html>
